@@ -830,9 +830,16 @@ impl EndpointExplorationReport {
         self.chassis
             .iter()
             .find(|chassis| chassis.id == "Card1")
-            .and_then(|chassis| chassis.part_number.as_deref())
-            .map(str::trim)
-            .filter(|part_number| !part_number.is_empty())
+            .and_then(chassis_part_number)
+            .or_else(|| {
+                // BF4 DPU BMC firmware often leaves Card1 empty and publishes the
+                // product part on the integrated BMC chassis instead (POR id
+                // `Bluefield_BMC` on some trays, `BlueField_BMC_0` on others).
+                self.chassis
+                    .iter()
+                    .find(|chassis| is_dpu_product_chassis_id(&chassis.id))
+                    .and_then(chassis_part_number)
+            })
     }
 
     /// Return `true` if the explored endpoint is a DPU
@@ -1742,6 +1749,20 @@ pub fn is_bf2_dpu_part_number(part_number: &str) -> bool {
 pub fn is_bf4_dpu_part_number(part_number: &str) -> bool {
     let normalized_part_number = part_number.to_lowercase();
     normalized_part_number.starts_with("900-9d4b4")
+        || normalized_part_number.starts_with("900-9d4a4")
+}
+
+/// Whether a DPU BMC chassis member carries the card product identity (part/serial).
+fn is_dpu_product_chassis_id(id: &str) -> bool {
+    matches!(id, "Bluefield_BMC" | "BlueField_BMC_0")
+}
+
+fn chassis_part_number(chassis: &Chassis) -> Option<&str> {
+    chassis
+        .part_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|part_number| !part_number.is_empty())
 }
 
 // returns true if the passed in string is a BlueField part number
@@ -2046,6 +2067,30 @@ mod explored_mlx_device_tests {
         }
     }
 
+    fn dpu_report_with_bf4_bmc_chassis(
+        bmc_chassis_id: &str,
+        bmc_part_number: &str,
+    ) -> EndpointExplorationReport {
+        EndpointExplorationReport {
+            systems: vec![ComputerSystem {
+                id: "Bluefield".to_string(),
+                ..Default::default()
+            }],
+            chassis: vec![
+                Chassis {
+                    id: "Card1".to_string(),
+                    ..Default::default()
+                },
+                Chassis {
+                    id: bmc_chassis_id.to_string(),
+                    part_number: Some(bmc_part_number.to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn missing_vendor_decodes_legacy_unit_variant() {
         // Records written before `observed` was added are stored as the bare
@@ -2094,6 +2139,38 @@ mod explored_mlx_device_tests {
             dpu_report_with_card1_part_number(Some("   ")).dpu_part_number(),
             None
         );
+    }
+
+    #[test]
+    fn dpu_part_number_falls_back_to_dpu_bmc_chassis_when_card1_empty() {
+        const VR_BF4_PART: &str = "900-9D4A4-00CB-TS4";
+        assert_eq!(
+            dpu_report_with_bf4_bmc_chassis("Bluefield_BMC", VR_BF4_PART).dpu_part_number(),
+            Some(VR_BF4_PART)
+        );
+        assert_eq!(
+            dpu_report_with_bf4_bmc_chassis("BlueField_BMC_0", VR_BF4_PART).dpu_part_number(),
+            Some(VR_BF4_PART)
+        );
+        let mut report = dpu_report_with_card1_part_number(Some("900-9D3B6-00CV-AA0"));
+        report.chassis.push(Chassis {
+            id: "Bluefield_BMC".to_string(),
+            part_number: Some(VR_BF4_PART.to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            report.dpu_part_number(),
+            Some("900-9D3B6-00CV-AA0"),
+            "Card1 part number must win when present"
+        );
+    }
+
+    #[test]
+    fn is_bf4_dpu_part_number_matches_vera_rubin_sku() {
+        assert!(is_bf4_dpu_part_number("900-9D4B4-CWAA-TSA"));
+        assert!(is_bf4_dpu_part_number("900-9D4A4-00CB-TS4"));
+        assert!(is_bluefield_part_number("900-9D4A4-00CB-TS4"));
+        assert!(!is_bf4_dpu_part_number("900-9D3B6-00CV-AA0"));
     }
 
     #[test]
