@@ -430,6 +430,20 @@ pub async fn final_delete(
     Ok(deleted_id)
 }
 
+/// Locks a VPC prefix against new foreign-key references before its final dependency check.
+pub async fn lock_for_final_delete(
+    vpc_prefix_id: VpcPrefixId,
+    txn: &mut PgConnection,
+) -> Result<(), DatabaseError> {
+    let query = "SELECT id FROM network_vpc_prefixes WHERE id=$1 FOR UPDATE";
+    sqlx::query_as::<_, VpcPrefixId>(query)
+        .bind(vpc_prefix_id)
+        .fetch_one(txn)
+        .await
+        .map(|_| ())
+        .map_err(|e| DatabaseError::query(query, e))
+}
+
 /// Updates the controller-owned VPC prefix state if the version still matches.
 pub async fn try_update_controller_state(
     txn: &mut PgConnection,

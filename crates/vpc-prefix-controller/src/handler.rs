@@ -124,7 +124,28 @@ impl StateHandler for VpcPrefixStateHandler {
                 VpcPrefixDeletionState::DBDelete => {
                     let mut txn = ctx.services.db_pool.begin().await?;
 
-                    // Remove the prefix row after all network_prefix references are gone.
+                    // Serialize with in-flight allocations before rechecking dependencies. A
+                    // previous drain iteration can observe zero references while an allocation
+                    // that already locked this prefix is still uncommitted.
+                    db::vpc_prefix::lock_for_final_delete(*vpc_prefix_id, &mut txn).await?;
+                    let referenced_prefixes =
+                        db::vpc_prefix::count_network_prefixes_by_vpc_prefix_id(
+                            &mut txn,
+                            vpc_prefix_id,
+                        )
+                        .await?;
+                    if referenced_prefixes > 0 {
+                        let new_state = self.drain_state();
+                        tracing::info!(
+                            referenced_prefixes,
+                            %vpc_prefix_id,
+                            "VPC Prefix gained network prefix references before final delete; returning to drain",
+                        );
+                        tracing::info!(%vpc_prefix_id, state = ?new_state, "VPC Prefix state transition");
+                        return Ok(StateHandlerOutcome::transition(new_state).with_txn(txn));
+                    }
+
+                    // Remove the prefix while the lock still prevents new FK references.
                     tracing::info!(
                         %vpc_prefix_id,
                         "VPC Prefix getting removed from the database",

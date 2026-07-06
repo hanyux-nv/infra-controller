@@ -541,6 +541,64 @@ async fn test_deleted_vpc_prefix_cannot_allocate_new_instance_interface(
 }
 
 #[crate::sqlx_test]
+async fn test_vpc_prefix_dbdelete_returns_to_drain_when_referenced(
+    pool: PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env = create_test_env(pool).await;
+    env.create_vpc_and_tenant_segment().await;
+    let vpc_id = get_vpc_fixture_id(&env).await;
+
+    // Create a prefix covering the fixture tenant segment so it has a durable child reference.
+    let created = create_vpc_prefix(&env, vpc_id, REFERENCED_VPC_PREFIX).await;
+    let id = created.id.expect("created VPC prefix should include an id");
+    drive_vpc_prefix_to_ready(&env, id).await;
+
+    assert!(network_prefix_ref_count(&env, id).await > 0);
+
+    // Soft-delete the prefix while retaining the child reference.
+    env.api
+        .delete_vpc_prefix(Request::new(VpcPrefixDeletionRequest { id: Some(id) }))
+        .await
+        .expect("delete should soft-delete the referenced VPC prefix");
+
+    // Reproduce the durable state seen in the failure: the prefix reached
+    // DBDelete even though a network_prefix reference exists.
+    sqlx::query(
+        r#"
+        UPDATE network_vpc_prefixes
+        SET controller_state =
+            '{"state":"deleting","deletion_state":{"state":"dbdelete"}}'::json
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .execute(&env.pool)
+    .await?;
+
+    // Run the DBDelete handler once.
+    env.run_vpc_prefix_controller_iteration().await;
+
+    // The parent must remain because its child reference still exists.
+    assert_eq!(stored_vpc_prefix_count(&env, id).await, 1);
+    assert!(network_prefix_ref_count(&env, id).await > 0);
+
+    let state_after: String = sqlx::query_scalar(
+        r#"
+        SELECT controller_state->'deletion_state'->>'state'
+        FROM network_vpc_prefixes
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_one(&env.pool)
+    .await?;
+
+    assert_eq!(state_after, "drainnetworkprefixes");
+
+    Ok(())
+}
+
+#[crate::sqlx_test]
 async fn test_vpc_prefix_final_delete_after_generated_segment_cleanup(
     pool: PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
