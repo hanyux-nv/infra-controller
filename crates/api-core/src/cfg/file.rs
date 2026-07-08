@@ -784,6 +784,9 @@ impl CarbideConfig {
             spdm_enabled: self.spdm.enabled,
 
             dpu_enable_secure_boot: self.dpu_config.dpu_enable_secure_boot,
+            restart_ovs_on_use_admin_network_change: self
+                .dpu_config
+                .restart_ovs_on_use_admin_network_change,
         }
     }
 }
@@ -2013,6 +2016,12 @@ pub struct DpuConfig {
     /// Defaults to 16 and must not exceed 126.
     #[serde(default)]
     pub num_of_vfs: u32,
+
+    /// Restart OVS on DPU agents whenever the host switches between
+    /// admin and tenant networking. Required in some environments to
+    /// ensure OVS picks up the changed network configuration.
+    #[serde(default)]
+    pub restart_ovs_on_use_admin_network_change: bool,
 }
 
 impl DpuConfig {
@@ -2052,6 +2061,8 @@ impl<'de> Deserialize<'de> for DpuConfig {
             dpu_enable_secure_boot: Option<bool>,
             #[serde(default)]
             num_of_vfs: Option<u32>,
+            #[serde(default)]
+            restart_ovs_on_use_admin_network_change: Option<bool>,
         }
 
         let partial = PartialDpuConfig::deserialize(deserializer)?;
@@ -2078,6 +2089,9 @@ impl<'de> Deserialize<'de> for DpuConfig {
                 .dpu_enable_secure_boot
                 .unwrap_or(default.dpu_enable_secure_boot),
             num_of_vfs,
+            restart_ovs_on_use_admin_network_change: partial
+                .restart_ovs_on_use_admin_network_change
+                .unwrap_or(default.restart_ovs_on_use_admin_network_change),
         })
     }
 }
@@ -2204,6 +2218,7 @@ impl Default for DpuConfig {
             ],
             dpu_enable_secure_boot: false,
             num_of_vfs: DEFAULT_DPU_NUM_OF_VFS,
+            restart_ovs_on_use_admin_network_change: false,
         }
     }
 }
@@ -2476,6 +2491,9 @@ impl From<CarbideConfig> for rpc::forge::RuntimeConfig {
             dpf_enabled: value.dpf.enabled,
             compile_time_helm_version: crate::dpf_services::COMPILE_TIME_HELM_VERSION.to_string(),
             compile_time_docker_version: crate::dpf_services::COMPILE_TIME_IMAGE_TAG.to_string(),
+            restart_ovs_on_use_admin_network_change: value
+                .dpu_config
+                .restart_ovs_on_use_admin_network_change,
         }
     }
 }
@@ -3999,6 +4017,22 @@ mod tests {
                 "[site_explorer] dpu_mode = {toml_value:?} should parse to {expected:?}",
             );
         }
+    }
+
+    #[test]
+    fn dpu_config_restart_ovs_on_use_admin_network_change_parses_and_displays() {
+        let config: CarbideConfig = Figment::new()
+            .merge(Toml::file(format!("{TEST_DATA_DIR}/min_config.toml")))
+            .merge(Toml::string(
+                "[dpu_config]\nrestart_ovs_on_use_admin_network_change = true\n",
+            ))
+            .extract()
+            .unwrap();
+
+        assert!(config.dpu_config.restart_ovs_on_use_admin_network_change);
+
+        let runtime_config: rpc::forge::RuntimeConfig = config.into();
+        assert!(runtime_config.restart_ovs_on_use_admin_network_change);
     }
 
     /// Real-world site TOMLs may still carry the now-removed
