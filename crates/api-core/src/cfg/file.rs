@@ -3394,7 +3394,7 @@ mod tests {
                 concurrent_explorations: 10,
                 explorations_per_run: 12,
                 create_machines: Arc::new(false.into()),
-                machines_created_per_run: 1,
+                machines_created_per_run: 4,
                 override_target_ip: None,
                 override_target_port: None,
                 bmc_proxy: carbide_site_explorer::config::bmc_proxy(None),
@@ -3409,7 +3409,7 @@ mod tests {
                 switches_created_per_run: 9,
                 rotate_switch_nvos_credentials: Arc::new(false.into()),
                 dpu_mode: None,
-                explore_mode: SiteExplorerExploreMode::LibRedfish,
+                explore_mode: SiteExplorerExploreMode::NvRedfish,
             }
         );
         assert_eq!(
@@ -3606,7 +3606,7 @@ mod tests {
                 switches_created_per_run: 9,
                 rotate_switch_nvos_credentials: Arc::new(false.into()),
                 dpu_mode: None,
-                explore_mode: SiteExplorerExploreMode::LibRedfish,
+                explore_mode: SiteExplorerExploreMode::NvRedfish,
             }
         );
 
@@ -3950,7 +3950,7 @@ mod tests {
                 switches_created_per_run: 9,
                 rotate_switch_nvos_credentials: Arc::new(false.into()),
                 dpu_mode: None,
-                explore_mode: SiteExplorerExploreMode::LibRedfish,
+                explore_mode: SiteExplorerExploreMode::NvRedfish,
             }
         );
 
@@ -4122,6 +4122,25 @@ mod tests {
         // Make sure that if we let serde pick the defaults, it matches Default::default().
         let deserialized = serde_json::from_str::<SiteExplorerConfig>("{}")?;
         assert_eq!(deserialized, SiteExplorerConfig::default());
+        Ok(())
+    }
+
+    /// Every hardware class SiteExplorer can identify is ingested by default:
+    /// a config whose `[site_explorer]` section omits the creation flags gets
+    /// the same behavior as one with no section at all. Creation stays gated
+    /// per device on a matching expected-hardware record, so these defaults
+    /// only ingest declared hardware.
+    #[test]
+    fn site_explorer_creation_flags_default_on() -> eyre::Result<()> {
+        let config = serde_json::from_str::<SiteExplorerConfig>("{}")?;
+        assert!(config.create_machines.load(AtomicOrdering::Relaxed));
+        assert!(config.create_switches.load(AtomicOrdering::Relaxed));
+        assert!(config.create_power_shelves.load(AtomicOrdering::Relaxed));
+        assert!(
+            config
+                .explore_power_shelves_from_static_ip
+                .load(AtomicOrdering::Relaxed)
+        );
         Ok(())
     }
 
